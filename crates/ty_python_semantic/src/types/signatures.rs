@@ -999,24 +999,26 @@ impl<'db> Signature<'db> {
             .is_some_and(|extras| extras.is_paramspec_value)
     }
 
-    /// Returns the callback's parameter index and result variable when only that callback
-    /// supplies `P` and `R`, as in `(f: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> Future[R]`.
+    /// Finds the callback that supplies both the wrapper's forwarded parameters and its result.
+    /// Returns its parameter index, result variable, and any positional prefix from `Concatenate`.
     pub(super) fn forwarded_callback_result(
         &self,
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
-    ) -> Option<(usize, BoundTypeVarInstance<'db>)> {
+    ) -> Option<(usize, BoundTypeVarInstance<'db>, &[Parameter<'db>])> {
         let context = self.generic_context?;
         let (prefix, paramspec) = self.parameters().as_paramspec_with_prefix()?;
-        let (index, result) = prefix.iter().enumerate().find_map(|(i, parameter)| {
-            let (captured, callback) = parameter
+        let (index, result, fixed) = prefix.iter().enumerate().find_map(|(i, parameter)| {
+            let callable = parameter
                 .annotated_type()
                 .resolve_type_alias(db)
-                .as_callable()?
-                .signatures(db)
-                .is_single_paramspec()?;
+                .as_callable()?;
+            let [callback] = callable.signatures(db).overloads.as_slice() else {
+                return None;
+            };
+            let (fixed, captured) = callback.parameters().as_paramspec_with_prefix()?;
             let result = callback.return_ty.as_typevar()?;
-            (captured == paramspec).then_some((i, result))
+            (captured == paramspec).then_some((i, result, fixed))
         })?;
         if !context.contains(db, paramspec.identity(db))
             || !context.contains(db, result.identity(db))
@@ -1028,15 +1030,17 @@ impl<'db> Signature<'db> {
         if skipped || !result.is_inferable(db, returned) || paramspec.is_inferable(db, returned) {
             return None;
         }
-        for (i, parameter) in prefix.iter().enumerate() {
-            if i != index {
-                let (free, skipped) = parameter.annotated_type().free_typevars(db, env);
-                if skipped || result.is_inferable(db, free) || paramspec.is_inferable(db, free) {
-                    return None;
-                }
-            }
+        let other_parameters = prefix
+            .iter()
+            .enumerate()
+            .filter_map(|(i, parameter)| (i != index).then_some(parameter));
+        if other_parameters.chain(fixed).any(|parameter| {
+            let (free, skipped) = parameter.annotated_type().free_typevars(db, env);
+            skipped || result.is_inferable(db, free) || paramspec.is_inferable(db, free)
+        }) {
+            return None;
         }
-        Some((index, result))
+        Some((index, result, fixed))
     }
 
     /// A captured parameter list refers to typevars owned by the surrounding call inference.

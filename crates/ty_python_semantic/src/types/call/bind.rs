@@ -8214,7 +8214,9 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
             return None;
         };
         let locals = signature.generic_context?;
-        let (_, variable) = self.signature.forwarded_callback_result(db, self.env)?;
+        let (_, variable, []) = self.signature.forwarded_callback_result(db, self.env)? else {
+            return None;
+        };
         let result = outer.get(db, variable)?;
         let (free, _) = result.free_typevars(db, self.env);
         if !locals.variables(db).any(|var| var.is_inferable(db, free))
@@ -9181,6 +9183,71 @@ impl<'db> Binding<'db> {
             .ok()
     }
 
+    /// For `pipe(items, Box)`, specialize the bare class using the overload for `Box(items)`.
+    /// The first inference pass can otherwise select a variadic overload and use its return
+    /// type as the context for `Box`, even when an earlier overload accepts `items` alone.
+    ///
+    /// TODO: Keep each overload's return type paired with its captured parameters until the
+    /// forwarded arguments select an overload. Here the fixed prefix supplies the entire call.
+    fn forwarded_constructor_context(
+        &self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        binding: &CallableBinding<'db>,
+        parameter_index: usize,
+        class: ClassLiteral<'db>,
+        call_expression_tcx: TypeContext<'db>,
+    ) -> Option<Type<'db>> {
+        let result = self.signature.return_ty.as_typevar()?;
+        class.generic_context(db)?;
+        let (index, var, [fixed]) = self.signature.forwarded_callback_result(db, env)? else {
+            return None;
+        };
+        if index != parameter_index || var != result || self.is_partial_application {
+            return None;
+        }
+        let (prefix, _) = self.signature.parameters().as_paramspec_with_prefix()?;
+        if !self
+            .paramspec_call_argument_indices(binding, prefix.len())
+            .is_empty()
+        {
+            return None;
+        }
+        let constructor = Type::ClassLiteral(class);
+        let callable = constructor.try_upcast_to_callable(db, env)?.exactly_one()?;
+        if callable.signatures(db).overloads.len() < 2 {
+            return None;
+        }
+        let argument = fixed
+            .annotated_type()
+            .apply_specialization(db, self.merged_specialization(db)?);
+        if argument.is_dynamic() {
+            return None;
+        }
+        let arguments = CallArguments::positional([argument]);
+        let call = constructor
+            .bindings(db, env)
+            .match_parameters(db, env, &arguments)
+            .check_types(
+                db,
+                env,
+                &ConstraintSetBuilder::new(),
+                &arguments,
+                call_expression_tcx,
+                &[],
+            )
+            .ok()?;
+        Some(Type::single_callable(
+            db,
+            Signature::new(
+                Parameters::standard([
+                    Parameter::positional_only(None).with_annotated_type(argument)
+                ]),
+                call.return_type(db, env),
+            ),
+        ))
+    }
+
     /// Returns the type context to use for bidirectional inference of a source call argument.
     ///
     /// Request the shared argument specialization only when this parameter needs it. Unmatched
@@ -9216,6 +9283,24 @@ impl<'db> Binding<'db> {
         let mut parameter_type = matched_parameter
             .expected_type
             .or_else(|| parameter.argument_context_type())?;
+
+        if let Some(CallArgument::Positional(types) | CallArgument::Keyword { types, .. }) =
+            arguments_types.get(argument_index)
+            && let Some(Type::ClassLiteral(class)) = types.get_default()
+            && let Some(expected) = self.forwarded_constructor_context(
+                db,
+                env,
+                binding,
+                matched_parameter.index,
+                class,
+                call_expression_tcx,
+            )
+        {
+            return Some(ArgumentTypeContext::standard(
+                original_parameter_type,
+                TypeContext::new(Some(expected), TypeContextKind::Inferred),
+            ));
+        }
 
         // If the parameter is a single non-ParamSpec type variable with an upper bound,
         // e.g., `typing.Self`, use the upper bound as type context. ParamSpec components
@@ -9817,7 +9902,9 @@ impl<'db> Binding<'db> {
             // Only a positional binding fixes `f`: a later call can override any bound keyword.
             let (prefix, paramspec) = signature.parameters().as_paramspec_with_prefix()?;
             let (callback, preceding) = prefix.split_last()?;
-            let (index, result_var) = signature.forwarded_callback_result(db, env)?;
+            let (index, result_var, []) = signature.forwarded_callback_result(db, env)? else {
+                return None;
+            };
             if index != preceding.len()
                 || context.variables(db).count() != 2
                 || paramspec

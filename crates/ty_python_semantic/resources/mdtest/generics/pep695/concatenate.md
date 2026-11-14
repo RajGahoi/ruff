@@ -755,6 +755,34 @@ def f3(y: str | int) -> str | int:
 reveal_type(f3)  # revealed: Overload[(x: int, /, y: str) -> str, (x: int, /, y: int) -> int]
 ```
 
+## Forwarding an overloaded constructor
+
+With one list, `Box` takes its elements. With two lists, it takes the lists themselves as elements.
+Passing the constructor to `pipe` preserves that distinction. An expected result type can also widen
+the element type, just as it can for a direct constructor call.
+
+```py
+from collections.abc import Iterable
+from typing import Callable, Concatenate, overload
+
+class Box[T]:
+    value: T
+
+    @overload
+    def __init__(self, items: Iterable[T], /) -> None: ...
+    @overload
+    def __init__(self, item: T, /, *rest: T) -> None: ...
+    def __init__(self, *args: object) -> None: ...
+
+def pipe[A, **P, R](value: A, f: Callable[Concatenate[A, P], R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return f(value, *args, **kwargs)
+
+def check(items: list[int]) -> Box[object]:
+    reveal_type(pipe(items, Box))  # revealed: Box[int]
+    reveal_type(pipe(items, Box, items))  # revealed: Box[list[int]]
+    return pipe(items, Box)
+```
+
 ## `Concatenate` with protocol classes
 
 A protocol with `ParamSpec` in its `__call__` can be used where `Callable[Concatenate[...], ...]` is

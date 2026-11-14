@@ -1125,6 +1125,39 @@ def transform(items: list[T], f: Callable[[T], U]):
     reveal_type(pipe(items, step))  # revealed: Unknown
 ```
 
+## Forwarding an overloaded constructor
+
+With one list, `Box` takes its elements. With two lists, it takes the lists themselves as elements.
+Passing the constructor to `pipe` preserves that distinction. An expected result type can also widen
+the element type, just as it can for a direct constructor call.
+
+```py
+from collections.abc import Iterable
+from typing import Callable, Concatenate, Generic, ParamSpec, TypeVar, overload
+
+T = TypeVar("T")
+A = TypeVar("A")
+P = ParamSpec("P")
+R = TypeVar("R")
+
+class Box(Generic[T]):
+    value: T
+
+    @overload
+    def __init__(self, items: Iterable[T], /) -> None: ...
+    @overload
+    def __init__(self, item: T, /, *rest: T) -> None: ...
+    def __init__(self, *args: object) -> None: ...
+
+def pipe(value: A, f: Callable[Concatenate[A, P], R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return f(value, *args, **kwargs)
+
+def check(items: list[int]) -> Box[object]:
+    reveal_type(pipe(items, Box))  # revealed: Box[int]
+    reveal_type(pipe(items, Box, items))  # revealed: Box[list[int]]
+    return pipe(items, Box)
+```
+
 ## Inferring through unions of structural `ParamSpec` protocols
 
 Different protocols with the same parameter list can satisfy a target protocol structurally, even

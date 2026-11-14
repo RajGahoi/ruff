@@ -2095,8 +2095,8 @@ def invalid_argument_with_context[S](value: Callable[[], S]) -> list[str]:
     return box_callable(value)  # error: [invalid-argument-type]
 ```
 
-A writable protocol member is invariant. The caller may supply a source whose `value` holds an
-arbitrary `object`, so the callee cannot assume that member holds a `str`.
+`consume` expects to read a `str` from `source.value`. A caller of `wrapper` can pass a
+`Source[object]` whose `value` is `42`.
 
 ```py
 from typing import Protocol
@@ -2104,7 +2104,9 @@ from typing import Protocol
 class Source[U](Protocol):
     value: U
 
-def consume[T: str](source: Source[T]) -> None: ...
+def consume[T: str](source: Source[T]) -> str:
+    return source.value
+
 def wrapper[S: Source[object]](source: S) -> None:
     consume(source)  # error: [invalid-argument-type]
 ```

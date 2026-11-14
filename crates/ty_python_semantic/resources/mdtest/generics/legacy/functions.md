@@ -513,8 +513,8 @@ def invalid_argument_with_context(value: Callable[[], S]) -> list[str]:
     return box_callable(value)  # error: [invalid-argument-type]
 ```
 
-A writable protocol member is invariant. The caller may supply a source whose `value` holds an
-arbitrary `object`, so the callee cannot assume that member holds a `str`.
+`consume` expects to read a `str` from `source.value`. We can't assume a compatible specialization
+of `Source[T]`: a caller of `wrapper` could pass a `Source[object]` whose `value` is `42`.
 
 ```py
 from typing import Protocol, TypeVar
@@ -527,15 +527,17 @@ class Source(Protocol[Element]):
 SourceT = TypeVar("SourceT", bound=Source[object])
 Text = TypeVar("Text", bound=str)
 
-def consume(source: Source[Text]) -> None: ...
+def consume(source: Source[Text]) -> str:
+    return source.value
+
 def wrapper(source: SourceT) -> None:
     consume(source)  # error: [invalid-argument-type]
 ```
 
 ## Preserving an argument through a gradual upper bound
 
-For every caller specialization of `T`, `list[T]` satisfies the bound `list[Any]`. Returning the
-argument preserves its element type.
+In the call on the last line of this example, we should infer `list[T]`, not substitute `Any` for
+`T` (due to the `list[Any]` upper bound) and infer `list[Any]`:
 
 ```py
 from typing import Any, TypeVar

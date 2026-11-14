@@ -1075,6 +1075,56 @@ reveal_type(without_first(wrapped))  # revealed: (value: str) -> None
 reveal_type(without_first(Callback(original)))  # revealed: (value: str) -> None
 ```
 
+## Currying a generic function
+
+A decorator can take the mapper in one call and its input list in the next. Each mapper determines
+the element type of the returned list.
+
+```py
+from typing import Callable, Concatenate, ParamSpec, TypeVar
+
+A = TypeVar("A")
+R = TypeVar("R")
+P = ParamSpec("P")
+T = TypeVar("T")
+U = TypeVar("U")
+
+def curry_flip(f: Callable[Concatenate[A, P], R]) -> Callable[P, Callable[[A], R]]:
+    raise NotImplementedError
+
+@curry_flip
+def map_items(items: list[T], f: Callable[[T], U]) -> list[U]:
+    return [f(item) for item in items]
+
+def check(numbers: list[int], words: list[str]):
+    stringify = map_items(str)
+    lengths = map_items(len)
+    reveal_type(stringify(numbers))  # revealed: list[str]
+    reveal_type(lengths(words))  # revealed: list[int]
+    # TODO: Reject this call because `len` does not accept `int`.
+    lengths(numbers)
+```
+
+The mapper can also be the first parameter of the original function. A generic caller can pass its
+own mapper and give the returned callable to `pipe`.
+
+```py
+def curry(f: Callable[Concatenate[A, P], R]) -> Callable[[A], Callable[P, R]]:
+    raise NotImplementedError
+
+@curry
+def map_with(f: Callable[[T], U], items: list[T]) -> list[U]:
+    return [f(item) for item in items]
+
+def pipe(value: T, f: Callable[[T], U]) -> U:
+    return f(value)
+
+def transform(items: list[T], f: Callable[[T], U]):
+    step = map_with(f)
+    # TODO: Preserve the result type `list[U@transform]`.
+    reveal_type(pipe(items, step))  # revealed: Unknown
+```
+
 ## Inferring through unions of structural `ParamSpec` protocols
 
 Different protocols with the same parameter list can satisfy a target protocol structurally, even

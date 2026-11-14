@@ -206,6 +206,50 @@ reveal_type(f(1, "", x=2))  # revealed: int
 reveal_type(f(a=1, b="", x=2))  # revealed: int
 ```
 
+### Currying a generic function
+
+A decorator can take the mapper in one call and its input list in the next. Each mapper determines
+the element type of the returned list.
+
+```py
+from typing import Callable, Concatenate
+
+def curry_flip[A, **P, R](f: Callable[Concatenate[A, P], R]) -> Callable[P, Callable[[A], R]]:
+    raise NotImplementedError
+
+@curry_flip
+def map_items[T, U](items: list[T], f: Callable[[T], U]) -> list[U]:
+    return [f(item) for item in items]
+
+def check(numbers: list[int], words: list[str]):
+    stringify = map_items(str)
+    lengths = map_items(len)
+    reveal_type(stringify(numbers))  # revealed: list[str]
+    reveal_type(lengths(words))  # revealed: list[int]
+    # TODO: Reject this call because `len` does not accept `int`.
+    lengths(numbers)
+```
+
+The mapper can also be the first parameter of the original function. A generic caller can pass its
+own mapper and give the returned callable to `pipe`.
+
+```py
+def curry[A, **P, R](f: Callable[Concatenate[A, P], R]) -> Callable[[A], Callable[P, R]]:
+    raise NotImplementedError
+
+@curry
+def map_with[T, U](f: Callable[[T], U], items: list[T]) -> list[U]:
+    return [f(item) for item in items]
+
+def pipe[T, U](value: T, f: Callable[[T], U]) -> U:
+    return f(value)
+
+def transform[T, U](items: list[T], f: Callable[[T], U]):
+    step = map_with(f)
+    # TODO: Preserve the result type `list[U@transform]`.
+    reveal_type(pipe(items, step))  # revealed: Unknown
+```
+
 ## Invalid uses of `Concatenate`
 
 ### Standalone annotation (not inside `Callable`)
@@ -796,7 +840,7 @@ def decorator[**P1](func: Callable[Concatenate[int, P1], None]) -> Callable[P1, 
 
 def foo[**P2](f: Callable[P2, None]) -> None:
     reveal_type(f)  # revealed: (**P2@foo) -> None
-    # TODO: This should raise an invalid-argument-type error
+    # error: [invalid-argument-type]
     reveal_type(decorator(f))  # revealed: (...) -> None
 ```
 

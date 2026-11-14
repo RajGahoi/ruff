@@ -6555,6 +6555,137 @@ impl<'db> CallInference<'_, 'db> {
         })
     }
 
+    /// Specializes a decorator that splits `Callable[Concatenate[A, P], R]` into
+    /// `(A) -> (P) -> R` or `(P) -> (A) -> R`, with one call per prefix parameter.
+    ///
+    /// TODO: Carry the original callable's constraints across these calls so that the
+    /// mapper in `map(mapper)(items)` constrains both the element type of `items` and
+    /// the result type. Ordinary specialization could then replace this fallback.
+    fn specialize_curried_return(&self, specialization: Specialization<'db>) -> Option<Type<'db>> {
+        let db = self.db;
+        let [callback] = self.signature.parameters().as_slice() else {
+            return None;
+        };
+        let [input] = callback
+            .annotated_type()
+            .as_callable()?
+            .signatures(db)
+            .overloads
+            .as_slice()
+        else {
+            return None;
+        };
+        let (prefix, paramspec) = input.parameters().as_paramspec_with_prefix()?;
+        let result = input.return_ty.as_typevar()?;
+        if prefix.is_empty() {
+            return None;
+        }
+
+        let mut remaining = prefix.iter();
+        let mut seen = FxHashSet::from_iter([result.identity(db), paramspec.identity(db)]);
+        let mut saw_paramspec = false;
+        let mut returned = self.return_ty;
+        while let Type::Callable(stage) = returned {
+            let [stage] = stage.signatures(db).overloads.as_slice() else {
+                return None;
+            };
+            if let Some(captured) = stage.parameters().as_paramspec() {
+                if saw_paramspec || !captured.is_same_typevar_as(db, paramspec) {
+                    return None;
+                }
+                saw_paramspec = true;
+            } else {
+                let [arg] = stage.parameters().as_slice() else {
+                    return None;
+                };
+                let expected = remaining.next()?.annotated_type().as_typevar()?;
+                if !seen.insert(expected.identity(db))
+                    || !arg.is_positional_only()
+                    || !arg
+                        .annotated_type()
+                        .as_typevar()?
+                        .is_same_typevar_as(db, expected)
+                {
+                    return None;
+                }
+            }
+            returned = stage.return_ty;
+        }
+        if !saw_paramspec
+            || remaining.next().is_some()
+            || !returned.as_typevar()?.is_same_typevar_as(db, result)
+        {
+            return None;
+        }
+
+        let ParamSpecValue::Callable(capture) =
+            specialization.get(db, paramspec)?.as_paramspec_value(db)?
+        else {
+            return None;
+        };
+        let [capture] = capture.signatures(db).overloads.as_slice() else {
+            return None;
+        };
+        let context = capture.generic_context?;
+        let capture_defaults = context.unknown_specialization(db, None);
+        let mut prefix_vars = TypeVarSet::None;
+        for param in prefix {
+            let value = specialization.get(db, param.annotated_type().as_typevar()?)?;
+            prefix_vars = prefix_vars.merge(db, value.free_typevars(db, self.env).0);
+        }
+        let prefix_locals = GenericContext::try_from_typevar_instances(
+            db,
+            self.env,
+            context
+                .variables(db)
+                .filter(|v| v.is_inferable(db, prefix_vars)),
+        )
+        .map(|ctx| ctx.unknown_specialization(db, None));
+
+        let args = specialization.generic_context(db);
+        let terms = args
+            .variables(db)
+            .zip(specialization.types(db))
+            .map(|(var, &value)| {
+                if var.is_same_typevar_as(db, paramspec)
+                    || value.apply_specialization(db, capture_defaults) == value
+                {
+                    return value;
+                }
+                if var.is_same_typevar_as(db, result) {
+                    let supplied_by_argument = capture
+                        .parameters()
+                        .iter()
+                        .any(|p| p.annotated_type() == value);
+                    let keep = if supplied_by_argument {
+                        // TODO: Infer the result of a generic identity even when the prefix
+                        // supplies no type variables. When a callback maps Parser[T] to Parser[T],
+                        // passing it to `pipe(self, callback)` should infer Parser[T] as the
+                        // result, even when the first argument has the narrower type Self.
+                        prefix_locals.is_some()
+                    } else {
+                        prefix_locals
+                            .is_none_or(|locals| value.apply_specialization(db, locals) == value)
+                    };
+                    return if keep { value } else { Type::unknown() };
+                }
+                match value {
+                    // TODO: Preserve the mapper's parameter list so we can check its arity
+                    // and overloads while deferring inference of its shared type variables.
+                    Type::Callable(_) => Type::Callable(CallableType::unknown(db)),
+                    Type::TypeVar(var) => var
+                        .top_materialized_upper_bound(db)
+                        .unwrap_or_else(Type::unknown),
+                    _ => value.apply_specialization(db, capture_defaults),
+                }
+            })
+            .collect::<Vec<_>>();
+        Some(
+            self.return_ty
+                .apply_specialization(db, args.specialize(db, terms)),
+        )
+    }
+
     /// Chooses the return type of a call, potentially correlating multiple compatible specializations.
     ///
     /// This method also returns a flag indicating whether the call arguments were validated against
@@ -6566,7 +6697,8 @@ impl<'db> CallInference<'_, 'db> {
 
         let merged_specialization = inference.merged_specialization(db);
         let specialize_return_ty = |specialization: Specialization<'db>| {
-            self.return_ty.apply_specialization(db, specialization)
+            self.specialize_curried_return(specialization)
+                .unwrap_or_else(|| self.return_ty.apply_specialization(db, specialization))
         };
 
         // TODO: Project correlated alternatives through constructor stages and partial signatures.
@@ -8068,6 +8200,9 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
 
     /// A captured parameter list omits the callback's return type. Restore it for the forwarded
     /// call when the inferred `R` still refers to one of the callback's own type variables.
+    ///
+    /// TODO: Infer the callback's return type and its captured parameters together from
+    /// the forwarded arguments, so the outer call can use the same specialization.
     fn paramspec_call_with_result(
         &self,
         callable: Type<'db>,
@@ -9647,6 +9782,10 @@ impl<'db> Binding<'db> {
 
     /// Infers the return of a forwarding callable from its positionally bound callback, even if
     /// an unpacking leaves the remaining parameters of the partial unknown.
+    ///
+    /// TODO: Have partial binding retain the type variables fixed by positional arguments
+    /// even when an unpacking prevents it from constructing the remaining signature.
+    /// The return type could then use that specialization directly.
     fn partial_forwarded_return_type(
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
@@ -9696,8 +9835,6 @@ impl<'db> Binding<'db> {
                 return None;
             };
 
-            // TODO: Teach partial binding which type variables are fixed by positional arguments
-            // even when an unpacking prevents us from building the remaining signature.
             wrappers.push((signature.return_ty, result_var));
             wrapped = argument.get_for_declared_type(callback.annotated_type());
         };

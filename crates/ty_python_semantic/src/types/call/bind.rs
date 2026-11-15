@@ -6583,17 +6583,17 @@ impl<'db> CallInference<'_, 'db> {
 
         let mut remaining = prefix.iter();
         let mut seen = FxHashSet::from_iter([result.identity(db), paramspec.identity(db)]);
-        let mut saw_paramspec = false;
+        let mut paramspec_first = None;
         let mut returned = self.return_ty;
         while let Type::Callable(stage) = returned {
             let [stage] = stage.signatures(db).overloads.as_slice() else {
                 return None;
             };
             if let Some(captured) = stage.parameters().as_paramspec() {
-                if saw_paramspec || !captured.is_same_typevar_as(db, paramspec) {
+                if paramspec_first.is_some() || !captured.is_same_typevar_as(db, paramspec) {
                     return None;
                 }
-                saw_paramspec = true;
+                paramspec_first = Some(remaining.len() == prefix.len());
             } else {
                 let [arg] = stage.parameters().as_slice() else {
                     return None;
@@ -6611,10 +6611,8 @@ impl<'db> CallInference<'_, 'db> {
             }
             returned = stage.return_ty;
         }
-        if !saw_paramspec
-            || remaining.next().is_some()
-            || !returned.as_typevar()?.is_same_typevar_as(db, result)
-        {
+        let paramspec_first = paramspec_first?;
+        if remaining.next().is_some() || !returned.as_typevar()?.is_same_typevar_as(db, result) {
             return None;
         }
 
@@ -6627,9 +6625,33 @@ impl<'db> CallInference<'_, 'db> {
             return None;
         };
         let context = capture.generic_context?;
+        let is_invariant_instance = |ty: Type<'db>, variable: BoundTypeVarInstance<'db>| {
+            ty.is_nominal_instance()
+                && ty
+                    .class_specialization(db, self.env)
+                    .is_some_and(|(_, specialization)| {
+                        specialization.types(db) == [Type::TypeVar(variable)]
+                    })
+                && ty
+                    .variance_of(db, self.env, variable.identity(db))
+                    .evaluate(db)
+                    == TypeVarVariance::Invariant
+        };
         let mut prefix_vars = TypeVarSet::None;
         for param in prefix {
             let value = specialization.get(db, param.annotated_type().as_typevar()?)?;
+            // In `append(items)(value)`, a required first argument of type `list[T]`
+            // fixes T for the second call. Ordinary specialization preserves that binding.
+            if paramspec_first
+                && prefix.len() == 1
+                && let Type::TypeVar(variable) = value
+                && context.contains(db, variable.identity(db))
+                && capture
+                    .single_required_positional_parameter_type()
+                    .is_some_and(|argument| is_invariant_instance(argument, variable))
+            {
+                return None;
+            }
             prefix_vars = prefix_vars.merge(db, value.free_typevars(db, self.env).0);
         }
         let prefix_locals = GenericContext::try_from_typevar_instances(
@@ -6664,13 +6686,7 @@ impl<'db> CallInference<'_, 'db> {
 
             // In `first[T](x: T, y: T) -> T`, the first call supplies a value of T. An
             // invariant specialization such as `list[T]` also determines its element type.
-            let invariant_argument =
-                prefix_variance == TypeVarVariance::Invariant
-                    && matches!(fixed, Type::NominalInstance(_))
-                    && fixed.class_specialization(db, self.env).is_some_and(
-                        |(_, specialization)| specialization.types(db) == [Type::TypeVar(variable)],
-                    );
-            if invariant_argument
+            if is_invariant_instance(fixed, variable)
                 || (prefix_variance == TypeVarVariance::Covariant
                     && result_variance == TypeVarVariance::Covariant)
             {

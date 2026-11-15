@@ -1138,6 +1138,33 @@ def check(numbers: list[int], words: list[str]):
     lengths(numbers)
 ```
 
+Because `append` writes into the list supplied by the first call, the next argument must match the
+list's element type.
+
+```py
+@curry_flip
+def append(item: T, items: list[T]) -> T:
+    items.append(item)
+    return item
+
+def check_append(numbers: list[int]):
+    append_number = append(numbers)
+    reveal_type(append_number(1))  # revealed: int
+    append_number("x")  # error: [invalid-argument-type]
+```
+
+A `tuple[int, ...]` also fits `tuple[int | str, ...]` because tuples are covariant. A string is a
+valid default when the tuple is empty.
+
+```py
+@curry_flip
+def first_or(default: T, items: tuple[T, ...]) -> T:
+    return items[0] if items else default
+
+def check_default(numbers: tuple[int, ...]):
+    first_or(numbers)("empty")  # ok
+```
+
 The mapper can also be the first parameter of the original function. A generic caller can pass its
 own mapper and give the returned callable to `pipe`.
 

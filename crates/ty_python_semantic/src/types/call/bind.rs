@@ -6642,6 +6642,66 @@ impl<'db> CallInference<'_, 'db> {
         )
         .map(|ctx| ctx.unknown_specialization(db, None));
 
+        let result_type = specialization.get(db, result)?;
+        let result_is_parameter = capture
+            .parameters()
+            .iter()
+            .any(|p| p.annotated_type() == result_type);
+        let prefix_binds_result = prefix_locals
+            .is_some_and(|locals| result_type.apply_specialization(db, locals) != result_type);
+
+        let keep_result = if result_is_parameter
+            && prefix_binds_result
+            && let [param] = prefix
+            && let Ok(variable) = context.variables(db).exactly_one()
+        {
+            let fixed = specialization.get(db, param.annotated_type().as_typevar()?)?;
+            let variance = |ty: Type<'db>| {
+                ty.variance_of(db, self.env, variable.identity(db))
+                    .evaluate(db)
+            };
+            let prefix_variance = variance(fixed);
+            let result_variance = variance(result_type);
+
+            // In `first[T](x: T, y: T) -> T`, the first call supplies a value of T. An
+            // invariant specialization such as `list[T]` also determines its element type.
+            let invariant_argument =
+                prefix_variance == TypeVarVariance::Invariant
+                    && matches!(fixed, Type::NominalInstance(_))
+                    && fixed.class_specialization(db, self.env).is_some_and(
+                        |(_, specialization)| specialization.types(db) == [Type::TypeVar(variable)],
+                    );
+            if invariant_argument
+                || (prefix_variance == TypeVarVariance::Covariant
+                    && result_variance == TypeVarVariance::Covariant)
+            {
+                let mut parameters = capture.clone();
+                parameters.generic_context = None;
+                let parameters = Type::Callable(CallableType::paramspec_value_from_signatures(
+                    db,
+                    CallableSignature::single(parameters),
+                ));
+                let curried = self
+                    .return_ty
+                    .substitute_one_typevar(db, self.env, paramspec, parameters)
+                    .apply_specialization(db, specialization)
+                    .as_callable()?;
+                let signatures = curried
+                    .signatures(db)
+                    .with_inherited_generic_context(db, context);
+                return Some(Type::Callable(curried.with_signatures(db, signatures)));
+            }
+
+            // A callback that only consumes T leaves the second call free to choose a subtype.
+            // Conversely, a value of T can be passed to a callback that accepts a supertype.
+            (prefix_variance.is_contravariant()
+                && result_variance != TypeVarVariance::Contravariant)
+                || (prefix_variance == TypeVarVariance::Covariant
+                    && result_variance.is_contravariant())
+        } else {
+            !prefix_binds_result && (!result_is_parameter || prefix_locals.is_some())
+        };
+
         let args = specialization.generic_context(db);
         let terms = args
             .variables(db)
@@ -6653,21 +6713,10 @@ impl<'db> CallInference<'_, 'db> {
                     return value;
                 }
                 if var.is_same_typevar_as(db, result) {
-                    let supplied_by_argument = capture
-                        .parameters()
-                        .iter()
-                        .any(|p| p.annotated_type() == value);
-                    let keep = if supplied_by_argument {
-                        // TODO: Infer the result of a generic identity even when the prefix
-                        // supplies no type variables. When a callback maps Parser[T] to Parser[T],
-                        // passing it to `pipe(self, callback)` should infer Parser[T] as the
-                        // result, even when the first argument has the narrower type Self.
-                        prefix_locals.is_some()
-                    } else {
-                        prefix_locals
-                            .is_none_or(|locals| value.apply_specialization(db, locals) == value)
-                    };
-                    return if keep { value } else { Type::unknown() };
+                    // TODO: Bind shared variables at the stage that supplies them. When the prefix
+                    // supplies no variables, a curried identity passed to `pipe` can also lose
+                    // the type of its argument.
+                    return if keep_result { value } else { Type::unknown() };
                 }
                 match value {
                     // TODO: Preserve the mapper's parameter list so we can check its arity

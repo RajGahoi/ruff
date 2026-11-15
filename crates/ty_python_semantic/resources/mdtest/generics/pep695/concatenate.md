@@ -248,6 +248,91 @@ def transform[T, U](items: list[T], f: Callable[[T], U]):
     step = map_with(f)
     # TODO: Preserve the result type `list[U@transform]`.
     reveal_type(pipe(items, step))  # revealed: Unknown
+
+    # TODO: Reject a mapper that requires two arguments. Each list element supplies only one.
+    map_with(lambda a, b: a)(items)
+```
+
+The first call to `first` fixes the type used by the second call. Two uses of `first` can choose
+different types.
+
+```py
+@curry
+def first[T](x: T, y: T) -> T:
+    return x
+
+@curry
+def from_callback[T](make: Callable[[], T], fallback: T) -> T:
+    return make()
+
+def use(number: int, text: str, make_int: Callable[[], int]):
+    numbers, words = first(number), first(text)
+    reveal_type(numbers(number))  # revealed: int
+    reveal_type(words(text))  # revealed: str
+    numbers(text)  # error: [invalid-argument-type]
+    from_callback(make_int)(text)  # error: [invalid-argument-type]
+```
+
+A callback that accepts any object can observe both integers and strings. It places an upper bound
+on `T`. The list supplied in the second call determines the element type.
+
+```py
+@curry
+def visit[T](observe: Callable[[T], None], items: list[T]) -> list[T]:
+    for item in items:
+        observe(item)
+    return items
+
+def observe_object(value: object) -> None: ...
+def observe_int(value: int) -> None: ...
+def check_lists(numbers: list[int], words: list[str]):
+    observe = visit(observe_object)
+    reveal_type(observe(numbers))  # revealed: list[int]
+    reveal_type(observe(words))  # revealed: list[str]
+    # TODO: Reject the string elements when the observer only accepts integers.
+    visit(observe_int)(words)
+```
+
+The same observer keeps its full input type when a curried function returns it.
+
+```py
+@curry
+def keep_observer[T](value: T, observe: Callable[[T], None]) -> Callable[[T], None]:
+    observe(value)
+    return observe
+
+reveal_type(keep_observer(1)(observe_object))  # revealed: (object, /) -> None
+```
+
+A list fixes its element type even when that type belongs to the caller. A callback receiving the
+list can both read and write those elements.
+
+```py
+@curry
+def either[T](left: list[T], right: list[T]) -> list[T]:
+    return left
+
+@curry
+def visit_batch[T](observe: Callable[[list[T]], None], items: list[T]) -> list[T]:
+    observe(items)
+    return items
+
+def batch[T](items: list[T]):
+    reveal_type(either(items)(items))  # revealed: list[T@batch]
+    # TODO: Keep the element type supplied by `items` when the callback accepts any object.
+    reveal_type(visit_batch(observe_object)(items))  # revealed: Unknown
+```
+
+When a curried function returns its second argument, the second call supplies its result type.
+
+```py
+@curry
+def choose[T](flag: bool, value: T) -> T:
+    return value
+
+def keep_list(items: list[str]):
+    # TODO: Infer `list[str]` for the generic identity returned by `choose(True)`.
+    reveal_type(pipe(items, choose(True)))  # revealed: Unknown
 ```
 
 ## Invalid uses of `Concatenate`

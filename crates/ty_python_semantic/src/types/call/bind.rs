@@ -6627,7 +6627,6 @@ impl<'db> CallInference<'_, 'db> {
             return None;
         };
         let context = capture.generic_context?;
-        let capture_defaults = context.unknown_specialization(db, None);
         let mut prefix_vars = TypeVarSet::None;
         for param in prefix {
             let value = specialization.get(db, param.annotated_type().as_typevar()?)?;
@@ -6702,37 +6701,33 @@ impl<'db> CallInference<'_, 'db> {
             !prefix_binds_result && (!result_is_parameter || prefix_locals.is_some())
         };
 
-        let args = specialization.generic_context(db);
-        let terms = args
-            .variables(db)
-            .zip(specialization.types(db))
-            .map(|(var, &value)| {
-                if var.is_same_typevar_as(db, paramspec)
-                    || value.apply_specialization(db, capture_defaults) == value
-                {
-                    return value;
-                }
-                if var.is_same_typevar_as(db, result) {
-                    // TODO: Bind shared variables at the stage that supplies them. When the prefix
-                    // supplies no variables, a curried identity passed to `pipe` can also lose
-                    // the type of its argument.
-                    return if keep_result { value } else { Type::unknown() };
-                }
-                match value {
-                    // TODO: Preserve the mapper's parameter list so we can check its arity
-                    // and overloads while deferring inference of its shared type variables.
-                    Type::Callable(_) => Type::Callable(CallableType::unknown(db)),
-                    Type::TypeVar(var) => var
-                        .top_materialized_upper_bound(db)
-                        .unwrap_or_else(Type::unknown),
-                    _ => value.apply_specialization(db, capture_defaults),
-                }
-            })
-            .collect::<Vec<_>>();
-        Some(
-            self.return_ty
-                .apply_specialization(db, args.specialize(db, terms)),
-        )
+        let capture_defaults = context.unknown_specialization(db, None);
+        let terms = specialization.map_types(db, |_, var, value| {
+            if var.is_same_typevar_as(db, paramspec) {
+                return value;
+            }
+            let defaulted = value.apply_specialization(db, capture_defaults);
+            if defaulted == value {
+                return value;
+            }
+            if var.is_same_typevar_as(db, result) {
+                // TODO: Bind shared variables at the stage that supplies them. When the prefix
+                // supplies no variables, a curried identity passed to `pipe` can also lose
+                // the type of its argument.
+                return if keep_result { value } else { Type::unknown() };
+            }
+            match value {
+                // TODO: Preserve the mapper's parameter list so we can check its arity
+                // and overloads while deferring inference of its shared type variables.
+                Type::Callable(_) => Type::Callable(CallableType::unknown(db)),
+                Type::TypeVar(var) => var
+                    .top_materialized_upper_bound(db)
+                    .unwrap_or_else(Type::unknown),
+                _ => defaulted,
+            }
+        });
+        let specialized = specialization.generic_context(db).specialize(db, terms);
+        Some(self.return_ty.apply_specialization(db, specialized))
     }
 
     /// Chooses the return type of a call, potentially correlating multiple compatible specializations.
@@ -8844,12 +8839,11 @@ pub(crate) fn inferable_typevar_occurrences<'db>(
 
         fn visit_type(&self, db: &'db dyn Db, ty: Type<'db>) {
             if let Type::TypeVar(typevar) = ty {
-                let identity = if typevar.is_paramspec(db) {
-                    typevar.without_paramspec_attr(db).identity(db)
-                } else {
-                    typevar.identity(db)
-                };
-                if identity.is_inferable(db, self.inferable) {
+                if typevar
+                    .identity(db)
+                    .binder()
+                    .is_inferable(db, self.inferable)
+                {
                     self.count.set(self.count.get() + 1);
                 }
                 return;

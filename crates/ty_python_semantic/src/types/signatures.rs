@@ -3561,12 +3561,7 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
                                     parameter.annotated_type(),
                                     |ty| {
                                         ty.as_typevar().is_some_and(|nested| {
-                                            let nested = if nested.is_paramspec(db) {
-                                                nested.without_paramspec_attr(db)
-                                            } else {
-                                                nested
-                                            };
-                                            nested.is_same_typevar_as(db, *local)
+                                            nested.identity(db).binder() == local.identity(db)
                                         })
                                     },
                                 )

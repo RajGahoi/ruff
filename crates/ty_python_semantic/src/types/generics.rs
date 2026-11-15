@@ -568,12 +568,8 @@ impl<'db> GenericContext<'db> {
         db: &'db dyn Db,
         bound_typevar: BoundTypeVarIdentity<'db>,
     ) -> bool {
-        let bound_typevar = if bound_typevar.is_paramspec(db) {
-            bound_typevar.without_paramspec_attr(db)
-        } else {
-            bound_typevar
-        };
-        self.variables_inner(db).contains_key(&bound_typevar)
+        self.variables_inner(db)
+            .contains_key(&bound_typevar.binder())
     }
     /// Returns `true` if this generic context contains exactly one `ParamSpec` and no other type
     /// variables.
@@ -1240,7 +1236,7 @@ impl<'db> Specialization<'db> {
 
     /// Maps the specialization's types, returning [`Cow::Borrowed`] without allocating if every
     /// type is unchanged and [`Cow::Owned`] otherwise.
-    fn map_types(
+    pub(super) fn map_types(
         self,
         db: &'db dyn Db,
         mut map: impl FnMut(usize, BoundTypeVarInstance<'db>, Type<'db>) -> Type<'db>,

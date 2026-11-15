@@ -96,11 +96,9 @@ pub(super) struct SolutionWalker<'db, L> {
 
     /// Candidate solutions for each satisfiable path in the BDD.
     ///
-    /// We will check these solutions against the declared upper bounds (TODO and constraints) of
-    /// all relevant typevars (both inferable and non-inferable). Note that we will still create a
-    /// candidate solution for satisfiable paths that do _not_ satisfy the upper bounds and
-    /// constraints. Those paths will have a [`validity`][CandidateSolution::validity] of
-    /// [`Invalid`][SolutionValidity::Invalid].
+    /// We check each path against the declared bounds and constraints of the typevars in scope.
+    /// A satisfiable path that violates a declaration can still produce a candidate whose
+    /// [`validity`][CandidateSolution::validity] is [`Invalid`][SolutionValidity::Invalid].
     pending: Vec<PendingCandidateSolution<'db>>,
 
     unspecialized_type_var_policy: UnspecializedTypeVarPolicy,
@@ -183,12 +181,14 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
         storage: &mut ConstraintSetStorage<'db>,
-        path: &mut PathAssignments,
         polarity: Polarity,
-        node: NodeId,
     ) -> ControlFlow<L::Break, bool> {
-        self.node_is_satisfiable_on_path(db, env, storage, path, polarity, node, None)
-            .map_continue(|satisfiable| !satisfiable)
+        let node = self.original_node;
+        let (scope, mut path) = node.scoped_path(db, env, storage, &self.source_orders);
+        storage.in_scope(scope, |storage| {
+            self.node_is_satisfiable_on_path(db, env, storage, &mut path, polarity, node, None)
+                .map_continue(|satisfiable| !satisfiable)
+        })
     }
 
     /// Visit a BDD node and all of its descendants. We will add pending candidate solutions for
@@ -813,8 +813,8 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
         };
         // A ParamSpec can capture a generic callable whose binders are absent from
         // `self.inferable`. Rechecking the lower bound here would treat those binders as fixed.
-        // Leave calls with an inferable ParamSpec to the path walk, which also sees the capture.
-        // See https://github.com/astral-sh/ty/issues/4508.
+        // TODO: Include the captured binders in this check. For now the path walk handles calls
+        // with an inferable ParamSpec. See https://github.com/astral-sh/ty/issues/4508.
         if self
             .inferable
             .iter(db)

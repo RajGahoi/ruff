@@ -2608,12 +2608,8 @@ impl NodeId {
             Node::AlwaysFalse => ControlFlow::Continue(false),
             Node::Interior(_) => {
                 let source_orders = storage.calculate_source_orders(source_order);
-                let (scope, mut path) = self.scoped_path(db, env, storage, &source_orders);
-                storage.in_scope(scope, |storage| {
-                    let mut walker =
-                        SolutionWalker::new(db, storage, source_orders, inferable, limits, self);
-                    walker.is_never_satisfied(db, env, storage, &mut path, Polarity::Negative, self)
-                })
+                SolutionWalker::new(db, storage, source_orders, inferable, limits, self)
+                    .is_never_satisfied(db, env, storage, Polarity::Negative)
             }
         }
     }
@@ -2707,25 +2703,8 @@ impl NodeId {
                     false
                 } else {
                     let source_orders = storage.calculate_source_orders(source_order);
-                    let (scope, mut path) = self.scoped_path(db, env, storage, &source_orders);
-                    storage.in_scope(scope, |storage| {
-                        let mut walker = SolutionWalker::new(
-                            db,
-                            storage,
-                            source_orders,
-                            inferable,
-                            limits,
-                            self,
-                        );
-                        walker.is_never_satisfied(
-                            db,
-                            env,
-                            storage,
-                            &mut path,
-                            Polarity::Positive,
-                            self,
-                        )
-                    })?
+                    SolutionWalker::new(db, storage, source_orders, inferable, limits, self)
+                        .is_never_satisfied(db, env, storage, Polarity::Positive)?
                 };
                 storage.never_satisfied_cache.insert(key, result);
                 ControlFlow::Continue(result)

@@ -171,7 +171,7 @@ impl<'db> Constraint<'db> {
 
     pub(super) fn types(&self) -> impl Iterator<Item = Type<'db>> {
         match self {
-            Constraint::Atomic(atomic) => atomic.types(),
+            Constraint::Atomic(atomic) => atomic.types().into_iter(),
         }
     }
 
@@ -678,12 +678,11 @@ impl<'db> AtomicConstraint<'db> {
 
     /// Returns the types in relation order: lower then upper, or the two sides of an equality.
     pub(super) fn operands(self) -> (Type<'db>, Type<'db>) {
-        match self {
-            Self::ConcreteLower(this) => (this.bound, Type::TypeVar(this.typevar)),
-            Self::ConcreteUpper(this) => (Type::TypeVar(this.typevar), this.bound),
-            Self::ConcreteEquivalence(this) => (Type::TypeVar(this.typevar), this.bound),
-            Self::TypeVarRange(this) => (Type::TypeVar(this.left), Type::TypeVar(this.right)),
-            Self::TypeVarEquivalence(this) => (Type::TypeVar(this.left), Type::TypeVar(this.right)),
+        let [subject, bound] = self.types();
+        if matches!(self, Self::ConcreteLower(_)) {
+            (bound, subject)
+        } else {
+            (subject, bound)
         }
     }
 
@@ -732,8 +731,9 @@ impl<'db> AtomicConstraint<'db> {
         }
     }
 
-    fn types(self) -> impl Iterator<Item = Type<'db>> {
-        let types = match self {
+    /// Semantic walks visit the subject of a concrete bound first.
+    fn types(self) -> [Type<'db>; 2] {
+        match self {
             AtomicConstraint::ConcreteLower(this) => [Type::TypeVar(this.typevar), this.bound],
             AtomicConstraint::ConcreteUpper(this) => [Type::TypeVar(this.typevar), this.bound],
             AtomicConstraint::ConcreteEquivalence(this) => {
@@ -745,8 +745,7 @@ impl<'db> AtomicConstraint<'db> {
             AtomicConstraint::TypeVarEquivalence(this) => {
                 [Type::TypeVar(this.left), Type::TypeVar(this.right)]
             }
-        };
-        types.into_iter()
+        }
     }
 
     pub(super) fn display<'a>(

@@ -2397,7 +2397,7 @@ impl<'db> Signature<'db> {
                 .any(|parameter| parameter.annotated_type().contains_self(db, env))
     }
 
-    fn inferable_typevars(&self, db: &'db dyn Db) -> TypeVarSet<'db> {
+    pub(super) fn inferable_typevars(&self, db: &'db dyn Db) -> TypeVarSet<'db> {
         match self.generic_context {
             Some(generic_context) => generic_context.inferable_typevars(db),
             None => TypeVarSet::None,

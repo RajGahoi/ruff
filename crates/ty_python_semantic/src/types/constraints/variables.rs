@@ -251,21 +251,14 @@ impl<'db> AtomicConstraint<'db> {
                 }
 
                 // Otherwise we construct the correct lower-bound constraint.
-
-                // Comparing two typevars
-                Type::TypeVar(lower) if typevar.domain(db) != lower.domain(db) => {
+                _ if !Self::bound_has_compatible_domain(db, typevar, bound) => {
                     Some(Err(UnsatisfiableBound))
                 }
+
+                // Comparing two typevars
                 Type::TypeVar(lower) if scope.contains(db, lower) => {
                     let constraint = TypeVarRangeBound::new(db, provenance, lower, typevar).into();
                     Some(Ok(constraint))
-                }
-
-                // A ParamSpec can be bounded only by another ParamSpec or a captured signature.
-                _ if typevar.domain(db) == TypeVarDomain::ParameterSignature
-                    && !matches!(bound, Type::TypeVar(_) | Type::Callable(_)) =>
-                {
-                    Some(Err(UnsatisfiableBound))
                 }
 
                 // Comparing a typevar with a type
@@ -327,21 +320,14 @@ impl<'db> AtomicConstraint<'db> {
                 }
 
                 // Otherwise we construct the correct upper-bound constraint.
-
-                // Comparing two typevars
-                Type::TypeVar(upper) if typevar.domain(db) != upper.domain(db) => {
+                _ if !Self::bound_has_compatible_domain(db, typevar, bound) => {
                     Some(Err(UnsatisfiableBound))
                 }
+
+                // Comparing two typevars
                 Type::TypeVar(upper) if scope.contains(db, upper) => {
                     let constraint = TypeVarRangeBound::new(db, provenance, typevar, upper).into();
                     Some(Ok(constraint))
-                }
-
-                // A ParamSpec can be bounded only by another ParamSpec or a captured signature.
-                _ if typevar.domain(db) == TypeVarDomain::ParameterSignature
-                    && !matches!(bound, Type::TypeVar(_) | Type::Callable(_)) =>
-                {
-                    Some(Err(UnsatisfiableBound))
                 }
 
                 // Comparing a typevar with a type
@@ -412,22 +398,15 @@ impl<'db> AtomicConstraint<'db> {
             Type::TypeVar(bound_typevar) if typevar.is_same_typevar_as(db, bound_typevar) => None,
 
             // Otherwise we construct the correct equivalence constraint.
-
-            // Comparing two typevars
-            Type::TypeVar(bound_typevar) if typevar.domain(db) != bound_typevar.domain(db) => {
+            _ if !Self::bound_has_compatible_domain(db, typevar, normalized_bound) => {
                 Some(Err(UnsatisfiableBound))
             }
+
+            // Comparing two typevars
             Type::TypeVar(bound_typevar) if scope.contains(db, bound_typevar) => {
                 let constraint =
                     TypeVarEquivalenceBound::new(db, provenance, typevar, bound_typevar).into();
                 Some(Ok(constraint))
-            }
-
-            // A ParamSpec can be bounded only by another ParamSpec or a captured signature.
-            _ if typevar.domain(db) == TypeVarDomain::ParameterSignature
-                && !matches!(normalized_bound, Type::TypeVar(_) | Type::Callable(_)) =>
-            {
-                Some(Err(UnsatisfiableBound))
             }
 
             // Comparing a typevar with a type
@@ -438,6 +417,19 @@ impl<'db> AtomicConstraint<'db> {
             }
         };
         Either::Right(constraint.into_iter())
+    }
+
+    /// A `ParamSpec` can be bounded only by another `ParamSpec` or a captured signature.
+    fn bound_has_compatible_domain(
+        db: &'db dyn Db,
+        typevar: BoundTypeVarInstance<'db>,
+        bound: Type<'db>,
+    ) -> bool {
+        match bound {
+            Type::TypeVar(other) => typevar.domain(db) == other.domain(db),
+            Type::Callable(_) => true,
+            _ => typevar.domain(db) != TypeVarDomain::ParameterSignature,
+        }
     }
 
     fn normalize_bound(

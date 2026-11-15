@@ -180,9 +180,7 @@ impl<'db> ConstraintScope<'db> {
                 && parameter.is_inferable(db, inferable)
             {
                 for signature in captured.signatures(db) {
-                    if let Some(context) = signature.generic_context {
-                        expanded = expanded.merge(db, context.inferable_typevars(db));
-                    }
+                    expanded = expanded.merge(db, signature.inferable_typevars(db));
                 }
             }
         }

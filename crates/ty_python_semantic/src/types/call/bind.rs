@@ -9038,24 +9038,18 @@ impl<'db> Binding<'db> {
         &self,
         binding: &CallableBinding<'db>,
         prefix_len: usize,
-    ) -> Vec<usize> {
-        let bound_argument_offset = usize::from(binding.bound_type.is_some());
-
+    ) -> impl Iterator<Item = usize> {
         self.argument_matches
             .iter()
+            .skip(usize::from(binding.bound_type.is_some()))
             .enumerate()
-            .filter_map(|(matched_argument_index, argument_matches)| {
-                if matched_argument_index < bound_argument_offset {
-                    return None;
-                }
-
+            .filter_map(move |(argument_index, argument_matches)| {
                 argument_matches
                     .parameters
                     .iter()
                     .any(|parameter| parameter.index >= prefix_len)
-                    .then_some(matched_argument_index - bound_argument_offset)
+                    .then_some(argument_index)
             })
-            .collect()
     }
 
     /// Returns the specialized wrapped-call parameter type for a forwarded argument.
@@ -9086,8 +9080,9 @@ impl<'db> Binding<'db> {
         let callable = paramspec_value.to_callable_type(db, env)?;
 
         let (prefix, _) = self.signature.parameters().as_paramspec_with_prefix()?;
-        let paramspec_argument_indices =
-            self.paramspec_call_argument_indices(binding, prefix.len());
+        let paramspec_argument_indices: Vec<_> = self
+            .paramspec_call_argument_indices(binding, prefix.len())
+            .collect();
         let sub_argument_index = paramspec_argument_indices
             .iter()
             .position(|paramspec_argument_index| *paramspec_argument_index == argument_index)?;
@@ -9256,9 +9251,10 @@ impl<'db> Binding<'db> {
             return None;
         }
         let (prefix, _) = self.signature.parameters().as_paramspec_with_prefix()?;
-        if !self
+        if self
             .paramspec_call_argument_indices(binding, prefix.len())
-            .is_empty()
+            .next()
+            .is_some()
         {
             return None;
         }
@@ -9955,7 +9951,7 @@ impl<'db> Binding<'db> {
                 return None;
             };
             if index != preceding.len()
-                || context.variables(db).count() != 2
+                || context.len(db) != 2
                 || paramspec
                     .typevar(db)
                     .bound_or_constraints(db, env)

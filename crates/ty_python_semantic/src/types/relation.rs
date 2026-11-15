@@ -234,7 +234,8 @@ impl<'db> TypeVarEvaluation<'db> {
 
 impl<'db> UnionType<'db> {
     /// For `U ≤ T | A`, only the part of `U` outside `Top[A]` needs to be included in `T`.
-    /// An empty remainder supplies no evidence for inferring `T`.
+    /// Subtracting the top materialization excludes every materialization of a gradual `A`.
+    /// An empty remainder supplies no inference evidence and preserves `T`'s default.
     pub(super) fn residual_typevar_lower_bound(
         self,
         db: &'db dyn Db,

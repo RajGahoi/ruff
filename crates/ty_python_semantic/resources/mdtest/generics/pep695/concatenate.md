@@ -206,6 +206,36 @@ reveal_type(f(1, "", x=2))  # revealed: int
 reveal_type(f(a=1, b="", x=2))  # revealed: int
 ```
 
+### Registering a wrapper that forwards to its callback
+
+The first argument of `invoke` is a callback. Its remaining parameters and its return type match
+that callback. A decorator requiring this relationship accepts `invoke`.
+
+```py
+from typing import Callable, Concatenate
+
+def register[**P, R](wrapper: Callable[Concatenate[Callable[P, R], P], R]) -> Callable[P, R]:
+    raise NotImplementedError
+
+def invoke[**P, R](fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> R:
+    return fn(*args, **kwargs)
+
+register(invoke)  # ok
+```
+
+Passing a concrete callback supplies both its parameter list and its return type.
+
+```py
+def wrap[**P, R](fn: Callable[P, R], wrapper: Callable[Concatenate[Callable[P, R], P], R]) -> Callable[P, R]:
+    raise NotImplementedError
+
+def parse(s: str) -> int:
+    return int(s)
+
+# TODO: Accept `invoke` as a wrapper for `parse`.
+wrap(parse, invoke)  # error: [invalid-argument-type]
+```
+
 ### Currying a generic function
 
 A decorator can take the mapper in one call and its input list in the next. Each mapper determines
@@ -840,6 +870,51 @@ def f3(y: str | int) -> str | int:
 reveal_type(f3)  # revealed: Overload[(x: int, /, y: str) -> str, (x: int, /, y: int) -> int]
 ```
 
+## Choosing an overload from a callback's leading parameters
+
+A command callback takes either an owner and a context, or just a context, before its remaining
+parameters. A callback with only the context prefix selects the overload with no owner.
+
+```py
+from typing import Callable, Concatenate, overload
+
+@overload
+def command[O, C, **P, R](f: Callable[Concatenate[O, C, P], R]) -> tuple[O, R]: ...
+@overload
+def command[C, **P, R](f: Callable[Concatenate[C, P], R]) -> tuple[None, R]: ...
+def command(f):
+    raise NotImplementedError
+
+def check[O, C, **P, R](
+    callback: Callable[Concatenate[O, C, P], R] | Callable[Concatenate[C, P], R],
+    standalone: Callable[Concatenate[C, P], R],
+):
+    reveal_type(command(callback))  # revealed: tuple[O@check, R@check] | tuple[None, R@check]
+    reveal_type(command(standalone))  # revealed: tuple[None, R@check]
+    owned: tuple[O, R] = command(standalone)  # error: [invalid-assignment]
+```
+
+With a bound on the owner, the no-owner overload has to allow `None` in that bound. An invalid
+specialization here currently hides the owner mismatch at the call site.
+
+```py
+class Command[Owner: str]:
+    owner: Owner
+
+@overload
+def bind[Owner: str, C, **P](f: Callable[Concatenate[Owner, C, P], None]) -> Command[Owner]: ...
+@overload
+def bind[C, **P](f: Callable[Concatenate[C, P], None]) -> Command[None]: ...  # error: [invalid-type-arguments]
+def bind(f):
+    raise NotImplementedError
+
+def check_bound[Owner: str, C, **P](f: Callable[Concatenate[Owner, C, P], None] | Callable[Concatenate[C, P], None]):
+    result = bind(f)
+    reveal_type(result)  # revealed: Command[Owner@check_bound] | Command[Unknown]
+    # TODO: Reject the assignment when the callback may have no owner.
+    owned: Command[Owner] = result
+```
+
 ## Forwarding an overloaded constructor
 
 With one list, `Box` takes its elements. With two lists, it takes the lists themselves as elements.
@@ -866,6 +941,17 @@ def check(items: list[int]) -> Box[object]:
     reveal_type(pipe(items, Box))  # revealed: Box[int]
     reveal_type(pipe(items, Box, items))  # revealed: Box[list[int]]
     return pipe(items, Box)
+```
+
+Calls through `operator.call` and `map` also pass a single list to the constructor.
+
+```py
+from operator import call
+
+def other_wrappers(items: list[int]):
+    # TODO: Both calls should select the iterable overload and produce a Box[int].
+    reveal_type(call(Box, items))  # revealed: Box[T@Box] | Box[T@Box]
+    reveal_type(next(map(Box, [items])))  # revealed: Box[int | list[int]]
 ```
 
 ## `Concatenate` with protocol classes

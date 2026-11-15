@@ -1207,6 +1207,36 @@ def check(value: int):
     reveal_type(forward(identity, value))  # revealed: int
     reveal_type(collect(forward, identity, value))  # revealed: list[int]
     wrong: list[str] = collect(forward, identity, value)  # error: [invalid-assignment]
+
+def box[T](value: T) -> list[T]:
+    return [value]
+
+def widen(value: int):
+    # TODO: The expected result can specialize `box` to return `list[object]`.
+    widened: list[list[object]] = collect(box, value)  # error: [invalid-assignment]
+```
+
+When a positional unpacking hides the remaining parameters of a partial application, a bound
+callback can still determine the result of both layers of `collect`.
+
+```py
+from functools import partial
+
+def nested_partial[T](callback: Callable[..., T], *args: object):
+    reveal_type(partial(collect, collect, callback, *args)())  # revealed: list[list[T@nested_partial]]
+```
+
+A wrapper can also supply a positional argument before the arguments in `P`. Its type determines the
+result of the generic callback.
+
+```py
+from typing import Concatenate
+
+def pipe[T, **P, R](value: T, fn: Callable[Concatenate[T, P], R], /, *args: P.args, **kwargs: P.kwargs) -> R:
+    return fn(value, *args, **kwargs)
+
+def prefixed(text: str):
+    reveal_type(pipe(text, identity))  # revealed: str
 ```
 
 Passing the same generic function twice lets the wrapper call one occurrence and return the other.
@@ -1528,6 +1558,21 @@ def outer[T](callback: Callable[[T], T | None]) -> None:
     reveal_type(keep(callback))  # revealed: (T@outer, /) -> T@outer | None
 ```
 
+`functools.wraps` preserves separate parameter lists for the wrapped function and its wrapper. The
+wrapper can accept `None` elements and filter them out before calling the wrapped function.
+
+```py
+from collections.abc import Iterable
+from functools import wraps
+
+def decorate[T](wrapped: Callable[[Iterable[T]], T | None]) -> Callable[[Iterable[T | None]], T | None]:
+    @wraps(wrapped)
+    def wrapper(items: Iterable[T | None]) -> T | None:
+        return wrapped(item for item in items if item is not None)
+
+    return wrapper
+```
+
 ### Captured and fixed variables in a return type
 
 Capturing a callable's type variable does not permit a second, enclosing variable in its return type
@@ -1787,17 +1832,23 @@ forward(target, "a", ["a"])
 
 ### Forwarded arguments with type-variable constraints
 
-A constrained generic callback can receive an argument matching any of its constraints. Capturing
-its parameters in a `ParamSpec` does not restrict the callback to its first constraint:
+A forwarded argument can select any of a callback's constraints. An unannotated argument leaves the
+result unknown, just as it does in a direct call.
 
 ```py
 from collections.abc import Callable
 
-def forward[**P](function: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> None: ...
+def forward[**P, R](function: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return function(*args, **kwargs)
+
 def identity[T: (str, bytes)](value: T) -> T:
     return value
 
-forward(identity, b"text")  # ok
+def consume[**P](function: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> None: ...
+def check(data: bytes, unannotated):
+    consume(identity, data)  # ok
+    reveal_type(forward(identity, data))  # revealed: bytes
+    reveal_type(forward(identity, unannotated))  # revealed: Unknown
 ```
 
 ### Forwarded callbacks with gradual types

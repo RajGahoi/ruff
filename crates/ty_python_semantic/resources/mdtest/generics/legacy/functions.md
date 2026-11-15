@@ -604,6 +604,27 @@ def keep(node: T) -> T:
 reveal_type(keep(Tree()))  # revealed: Tree
 ```
 
+The expected type can widen a fresh box of trees to a box of nodes. A box that already has element
+type `Tree` cannot be widened because its value is writable.
+
+```py
+from typing import Generic
+
+U = TypeVar("U")
+
+class Box(Generic[U]):
+    value: U
+
+def box(value: U) -> Box[U]:
+    raise NotImplementedError
+
+def accept(nodes: Box[Node]) -> None: ...
+def check(tree: Tree, trees: Box[Tree]):
+    nodes: Box[Node] = box(tree)  # ok
+    accept(box(tree))  # ok
+    accept(trees)  # error: [invalid-argument-type]
+```
+
 ## Inferring a constrained typevar
 
 ```py
@@ -2687,6 +2708,15 @@ def first(items: list[T]) -> T | None:
 
 def find(value: T) -> T | None:
     return first(wrap(value))  # ok
+```
+
+An upper bound on the element type also preserves the caller's type through `iter` and `next`.
+
+```py
+I = TypeVar("I", bound=int)
+
+def first_int(items: list[I]) -> I | None:
+    return next(iter(items), None)  # ok
 ```
 
 ## List literals with ambiguous union parameters

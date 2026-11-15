@@ -1046,7 +1046,6 @@ def collect[**P, R](f: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> 
 
 def check[T](f: Callable[..., T], *args: object) -> None:
     reveal_type(partial(collect, f, *args)())  # revealed: list[T@check]
-    reveal_type(partial(collect, collect, f, *args)())  # revealed: list[list[T@check]]
 ```
 
 If another parameter also contributes to the result type, the wrapper can return its value.

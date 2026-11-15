@@ -2425,6 +2425,25 @@ as_specialized: Base[list[int]] = GenericChild[int]()
 incompatible_specialization: Base[list[str]] = GenericChild[int]()  # error: [unsound-assignment]
 ```
 
+Writing to a `Base[int]` requires an integer. The additional `Base[Any]` path currently lets a
+caller write a string or an unconstrained type variable.
+
+```py
+U = TypeVar("U")
+
+def store(value: T, box: Base[T]) -> None:
+    box.value = value
+
+def check(value: U, mixed: Reversed, concrete: Concrete):
+    store(1, mixed)  # ok
+    # TODO: error: [invalid-argument-type]
+    store("wrong", mixed)
+    # TODO: error: [invalid-argument-type]
+    store(value, mixed)
+    store("wrong", concrete)  # error: [invalid-argument-type]
+    store(value, concrete)  # error: [invalid-argument-type]
+```
+
 ## Method overrides through gradual and concrete inheritance paths
 
 An override must satisfy the concrete return type inherited through `Concrete`, even when the MRO
@@ -2548,6 +2567,30 @@ class Concrete(Base[int]): ...
 class Child(Invalid, Concrete):
     def method(self, value: str) -> Any:
         return value
+```
+
+## Overrides with a type variable shared by the receiver and an argument
+
+`Base.remove` accepts any integer. The override restricts the key to a subtype of `bool`, so it does
+not support every call permitted on the base class.
+
+```py
+from typing import Any, Generic
+from typing_extensions import TypeVar
+
+V = TypeVar("V", infer_variance=True)
+K = TypeVar("K", bound=bool, infer_variance=True)
+T = TypeVar("T", bound=bool)
+
+class Base:
+    def remove(self, key: int) -> None: ...
+
+class Map(Base, Generic[V, K]):
+    # TODO: error: [incompatible-method-override]
+    def remove(self: "Map[Any, T]", key: T) -> None: ...
+
+def check(values: Map[int, bool]):
+    values.remove(3)  # error: [invalid-argument-type]
 ```
 
 ## Generic methods

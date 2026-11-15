@@ -1075,6 +1075,39 @@ reveal_type(without_first(wrapped))  # revealed: (value: str) -> None
 reveal_type(without_first(Callback(original)))  # revealed: (value: str) -> None
 ```
 
+## Registering a wrapper that forwards to its callback
+
+The first argument of `invoke` is a callback. Its remaining parameters and its return type match
+that callback. A decorator requiring this relationship accepts `invoke`.
+
+```py
+from typing import Callable, Concatenate, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def register(wrapper: Callable[Concatenate[Callable[P, R], P], R]) -> Callable[P, R]:
+    raise NotImplementedError
+
+def invoke(fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> R:
+    return fn(*args, **kwargs)
+
+register(invoke)  # ok
+```
+
+Passing a concrete callback supplies both its parameter list and its return type.
+
+```py
+def wrap(fn: Callable[P, R], wrapper: Callable[Concatenate[Callable[P, R], P], R]) -> Callable[P, R]:
+    raise NotImplementedError
+
+def parse(s: str) -> int:
+    return int(s)
+
+# TODO: Accept `invoke` as a wrapper for `parse`.
+wrap(parse, invoke)  # error: [invalid-argument-type]
+```
+
 ## Currying a generic function
 
 A decorator can take the mapper in one call and its input list in the next. Each mapper determines
@@ -1210,6 +1243,60 @@ def keep_list(items: list[str]):
     reveal_type(pipe(items, choose(True)))  # revealed: Unknown
 ```
 
+## Choosing an overload from a callback's leading parameters
+
+A command callback takes either an owner and a context, or just a context, before its remaining
+parameters. A callback with only the context prefix selects the overload with no owner.
+
+```py
+from typing import Callable, Concatenate, ParamSpec, TypeVar, overload
+
+O = TypeVar("O")
+C = TypeVar("C")
+P = ParamSpec("P")
+R = TypeVar("R")
+
+@overload
+def command(f: Callable[Concatenate[O, C, P], R]) -> tuple[O, R]: ...
+@overload
+def command(f: Callable[Concatenate[C, P], R]) -> tuple[None, R]: ...
+def command(f):
+    raise NotImplementedError
+
+def check(
+    callback: Callable[Concatenate[O, C, P], R] | Callable[Concatenate[C, P], R],
+    standalone: Callable[Concatenate[C, P], R],
+):
+    reveal_type(command(callback))  # revealed: tuple[O@check, R@check] | tuple[None, R@check]
+    reveal_type(command(standalone))  # revealed: tuple[None, R@check]
+    owned: tuple[O, R] = command(standalone)  # error: [invalid-assignment]
+```
+
+With a bound on the owner, the no-owner overload has to allow `None` in that bound. An invalid
+specialization here currently hides the owner mismatch at the call site.
+
+```py
+from typing import Generic
+
+Owner = TypeVar("Owner", bound=str)
+
+class Command(Generic[Owner]):
+    owner: Owner
+
+@overload
+def bind(f: Callable[Concatenate[Owner, C, P], None]) -> Command[Owner]: ...
+@overload
+def bind(f: Callable[Concatenate[C, P], None]) -> Command[None]: ...  # error: [invalid-type-arguments]
+def bind(f):
+    raise NotImplementedError
+
+def check_bound(f: Callable[Concatenate[Owner, C, P], None] | Callable[Concatenate[C, P], None]):
+    result = bind(f)
+    reveal_type(result)  # revealed: Command[Owner@check_bound] | Command[Unknown]
+    # TODO: Reject the assignment when the callback may have no owner.
+    owned: Command[Owner] = result
+```
+
 ## Forwarding an overloaded constructor
 
 With one list, `Box` takes its elements. With two lists, it takes the lists themselves as elements.
@@ -1241,6 +1328,17 @@ def check(items: list[int]) -> Box[object]:
     reveal_type(pipe(items, Box))  # revealed: Box[int]
     reveal_type(pipe(items, Box, items))  # revealed: Box[list[int]]
     return pipe(items, Box)
+```
+
+Calls through `operator.call` and `map` also pass a single list to the constructor.
+
+```py
+from operator import call
+
+def other_wrappers(items: list[int]):
+    # TODO: Both calls should select the iterable overload and produce a Box[int].
+    reveal_type(call(Box, items))  # revealed: Box[T@Box] | Box[T@Box]
+    reveal_type(next(map(Box, [items])))  # revealed: Box[int | list[int]]
 ```
 
 ## Inferring through unions of structural `ParamSpec` protocols
@@ -1464,6 +1562,36 @@ def check(value: int):
     reveal_type(forward(identity, value))  # revealed: int
     reveal_type(collect(forward, identity, value))  # revealed: list[int]
     wrong: list[str] = collect(forward, identity, value)  # error: [invalid-assignment]
+
+def box(value: T) -> list[T]:
+    return [value]
+
+def widen(value: int):
+    # TODO: The expected result can specialize `box` to return `list[object]`.
+    widened: list[list[object]] = collect(box, value)  # error: [invalid-assignment]
+```
+
+When a positional unpacking hides the remaining parameters of a partial application, a bound
+callback can still determine the result of both layers of `collect`.
+
+```py
+from functools import partial
+
+def nested_partial(callback: Callable[..., T], *args: object):
+    reveal_type(partial(collect, collect, callback, *args)())  # revealed: list[list[T@nested_partial]]
+```
+
+A wrapper can also supply a positional argument before the arguments in `P`. Its type determines the
+result of the generic callback.
+
+```py
+from typing import Concatenate
+
+def pipe(value: T, fn: Callable[Concatenate[T, P], R], /, *args: P.args, **kwargs: P.kwargs) -> R:
+    return fn(value, *args, **kwargs)
+
+def prefixed(text: str):
+    reveal_type(pipe(text, identity))  # revealed: str
 ```
 
 Passing the same generic function twice lets the wrapper call one occurrence and return the other.
@@ -2143,21 +2271,28 @@ forward(target, "a", ["a"])
 
 ### Forwarded arguments with type-variable constraints
 
-A constrained generic callback can receive an argument matching any of its constraints. Capturing
-its parameters in a `ParamSpec` does not restrict the callback to its first constraint:
+A forwarded argument can select any of a callback's constraints. An unannotated argument leaves the
+result unknown, just as it does in a direct call.
 
 ```py
 from collections.abc import Callable
 from typing import ParamSpec, TypeVar
 
 P = ParamSpec("P")
+R = TypeVar("R")
 T = TypeVar("T", str, bytes)
 
-def forward(function: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> None: ...
+def forward(function: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    return function(*args, **kwargs)
+
 def identity(value: T) -> T:
     return value
 
-forward(identity, b"text")  # ok
+def consume(function: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> None: ...
+def check(data: bytes, unannotated):
+    consume(identity, data)  # ok
+    reveal_type(forward(identity, data))  # revealed: bytes
+    reveal_type(forward(identity, unannotated))  # revealed: Unknown
 ```
 
 ### Generic constructors with bounded return types
@@ -2280,6 +2415,21 @@ def keep(callback: Callable[P, R]) -> Callable[P, R]:
 
 def outer(callback: Callable[[T], T | None]) -> None:
     reveal_type(keep(callback))  # revealed: (T@outer, /) -> T@outer | None
+```
+
+`functools.wraps` preserves separate parameter lists for the wrapped function and its wrapper. The
+wrapper can accept `None` elements and filter them out before calling the wrapped function.
+
+```py
+from collections.abc import Iterable
+from functools import wraps
+
+def decorate(wrapped: Callable[[Iterable[T]], T | None]) -> Callable[[Iterable[T | None]], T | None]:
+    @wraps(wrapped)
+    def wrapper(items: Iterable[T | None]) -> T | None:
+        return wrapped(item for item in items if item is not None)
+
+    return wrapper
 ```
 
 ### Captured and fixed variables in a return type

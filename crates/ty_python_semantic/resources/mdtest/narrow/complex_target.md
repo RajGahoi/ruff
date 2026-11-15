@@ -185,6 +185,24 @@ def _():
         reveal_type(c.x)  # revealed: int
 ```
 
+### Mutating a narrowed attribute through a method
+
+```py
+from typing import Literal
+
+class Stream:
+    current: Literal["name", "comma"]
+
+    def __next__(self) -> None:
+        self.current = "comma"
+
+def parse(stream: Stream):
+    if stream.current == "name":
+        next(stream)
+        # TODO: Calling `__next__` can change `current` to "comma".
+        reveal_type(stream.current)  # revealed: Literal["name"]
+```
+
 ## Subscript narrowing
 
 ### Number subscript

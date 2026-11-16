@@ -2181,9 +2181,7 @@ See: <https://docs.python.org/3/library/dataclasses.html#dataclasses.dataclass>
 **Rule history**
 
 
-- v0.0.102: Split out [`invalid-dataclass-post-init`](#invalid-dataclass-post-init). To keep a custom rule level for incompatible
-    `__post_init__` signatures, apply it to the new rule as well. Use [`invalid-dataclass-post-init`](#invalid-dataclass-post-init)
-    in suppression comments for those signatures.
+- v0.0.105: [`invalid-dataclass-post-init`](#invalid-dataclass-post-init) was split into a separate rule.
 
 [explicitly not supported]: https://docs.python.org/3/howto/enum.html#dataclass-support
 
@@ -2272,7 +2270,7 @@ class A:
 
 <small>
 Default level: <a href="../../rules#rule-levels" title="This lint has a default level of 'error'."><code>error</code></a> ·
-Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.102">0.0.102</a> ·
+Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.105">0.0.105</a> ·
 <a href="https://github.com/astral-sh/ty/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20%22invalid-dataclass-post-init%22" target="_blank">Related issues</a> ·
 <a href="https://github.com/astral-sh/ruff/blob/main/crates%2Fty_python_semantic%2Fsrc%2Ftypes%2Fdiagnostic.rs#L401" target="_blank">View source</a>
 </small>
@@ -2287,10 +2285,10 @@ Checks whether a dataclass's `__post_init__` method accepts the arguments passed
 **Why is this bad?**
 
 
-The generated `__init__` passes every `InitVar` field to `__post_init__` as a positional argument,
-in field order. If the number or kind of parameters is incompatible with that call, constructing an
-instance raises `TypeError`. If a parameter has an incompatible type, the method can receive a value
-it cannot handle.
+If a dataclass defines a `__post_init__` method, its generated `__init__` method will pass every
+`InitVar` field as a positional argument to the `__post_init__` method. If the number or kind of
+parameters is incompatible with that call, constructing an instance raises `TypeError`. If a
+parameter has an incompatible type, the method can receive a value it cannot handle.
 
 **Example**
 
@@ -2303,17 +2301,16 @@ from dataclasses import InitVar, dataclass
 class Sample:
     count: InitVar[int]
 
+    # `count` is declared as `int` in the field body, but declared as `str` in `__post_init__`:
+    #
     # error: [invalid-dataclass-post-init]
     def __post_init__(self, count: str) -> None: ...
 ```
 
-Here, annotating the `count` parameter as `int` allows the method to accept the value passed by
-`__init__`.
-
 **Rule history**
 
 
-- v0.0.102: Split out from [`invalid-dataclass`](#invalid-dataclass).
+- v0.0.105: Split out from [`invalid-dataclass`](#invalid-dataclass).
 
 ## `invalid-declaration`
 
